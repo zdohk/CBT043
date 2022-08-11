@@ -1,0 +1,134 @@
+  /* --------------------- REXX ---------------------------- *
+  | Execute this exec to allocate the hlq.FILEIDX.PDS       |
+  | dataset for use by the Official CBT ISPF Dialog.        |
+  |                                                         |
+  | 1. Prompt for new hlq.FILEIDX.PDS                       |
+  |    - FILEIDX.PDS is the required suffix                 |
+  | 2. Allocate the hlq.FILEIDX.PDS as a PDSE (maxgen=0)    |
+  | 3. Copy members from this PDS to it                     |
+  | 4. Receive member UNZIPXMI to hlq.FILEIDX.PDS as        |
+  |    member UNZIP                                         |
+  | 5. Open Edit on CBTCONFG to allow the user to customize |
+  |    the dialog configuration defaults                    |
+  | 6. Update the CBTVIEW exec to reference the new         |
+  |    hlq.FILEIDX.PDS                                      |
+  * ------------------------------------------------------- */
+  parse source with x cmd dd dsn .
+  if dsn = '?' then do
+    x    = listdsi(dd 'FILE')
+    dsn  = sysdsname
+  end
+  fileidx = translate(dsn,' ','.')
+  fw = words(fileidx)
+  fileidx = subword(fileidx,1,fw-2)
+  fileidx = fileidx 'FILEIDX.PDS'
+  fileidx = translate(fileidx,'.',' ')
+
+  replace  = ''
+  zerrhm   = ''
+  zerralrm = 'NO'
+  zerrtp   = 'Notify'
+  dsnzip   = "'"dsn"(unzipxmi)'"
+  dsn      = "'"dsn"'"
+  fileidx  = "'"fileidx"'"
+
+  Address ISPExec
+  "libdef ispplib dataset id("dsn") stack"
+  do
+    'AddPop Row(5) Column(3)'
+    'Display panel($instalp)'
+    drc = rc
+    'Rempop'
+    if drc > 0 then exit
+  end
+  "libdef ispplib"
+  if drc > 0 then exit
+
+  fileidx  = strip(fileidx,"B","'")
+  cbtview  = "'"fileidx"(cbtview)'"
+  cbtconfg = "'"fileidx"(cbtconfg)'"
+  fileidx  = "'"fileidx"'"
+
+  ddo = 'CBTI'random(999)
+  Address TSO
+
+  x = listdsi(fileidx)
+  if x > 0 then call alloc_idx
+  else
+  if idxact = 'R' then do
+    call outtrap 'x.'
+    'delete' fileidx
+    call outtrap 'off'
+    call alloc_idx
+  end
+
+  Address ISPexec
+  'lminit dataid(ddi) dataset('dsn')'
+  'lminit dataid(ddo) dataset('fileidx')'
+  'lmcopy fromid('ddi') todataid('ddo') frommem(CBT) replace'
+  'lmcopy fromid('ddi') todataid('ddo') frommem(CBTDOWN) replace'
+  'lmcopy fromid('ddi') todataid('ddo') frommem(CBTSRCH*) replace'
+  'lmcopy fromid('ddi') todataid('ddo') frommem($*) replace'
+  'lmcopy fromid('ddi') todataid('ddo') frommem(UNZIPL) replace'
+  'lmcopy fromid('ddi') todataid('ddo') frommem(XMITINFO) replace'
+  if replace = 1 then do
+    'lmcopy fromid('ddi') todataid('ddo') frommem(CBTCONFG) replace'
+    'lmcopy fromid('ddi') todataid('ddo') frommem(CBTVIEW) replace'
+  end
+  'lmfree dataid('ddi')'
+  'lmfree dataid('ddo')'
+
+  if idxact = 'U' then do
+    zerrsm = ''
+    zerrlm = fileidx 'has been updated with the current version of' ,
+      'the Official CBT ISPF Dialog. You *should* check the CBTCONFG' ,
+      'in this PDS and compare it to the one in' fileidx 'for any' ,
+      'updates.'
+    'setmsg msg(isrz002)'
+    exit 0
+  end
+
+  Address TSO
+  x = PROMPT('ON')
+  'newstack'
+  queue 'ds('fileidx')'
+  'Receive inds('dsnzip')'
+  'delstack'
+
+  Address ISPexec ,
+    'Edit dataset('cbtconfg')'
+
+  Address TSO
+  'Alloc f('ddo') shr reuse ds('cbtview')'
+  'Execio * diskr' ddo '(finis stem in.'
+  do i = 1 to in.0
+    if pos("ds('",in.i) = 0 then iterate
+    parse value in.i with cl"ds('"."')" .
+    in.i = cl'ds('fileidx')"'
+    leave
+  end
+  'Execio * diskw' ddo '(finis stem in.'
+  'Free f('ddo')'
+
+  Address ISPExec
+  "LMINIT DATAID(ddo) DATASET("fileidx")"
+  "LMOPEN DATAID("ddo") OPTION(INPUT)"
+  'LMMSTATS DATAID('ddo') MEMBER(CBTVIEW)'
+  zerrsm = ''
+  zerrlm = fileidx 'has been allocated and the Official CBT' ,
+    'ISPF Dialog has been copied into it. The CBTVIEW member has' ,
+    'been updated and is ready to place into your SYSEXEC or SYSPROC' ,
+    'set of libraries.'
+  'setmsg msg(isrz002)'
+  'Memlist dataid('ddo') Default(E) field(9)'
+  "LMClose Dataid("ddo")"
+  "LMFree  Dataid("ddo")"
+  Exit 0
+
+Alloc_IDX:
+  'alloc f('ddo') new spa(150,90) tr recfm(f b) lrecl(80) blksize(32720)' ,
+    'dsntype(library,2) dir(1) dsorg(po) dsn('fileidx')'
+  'free f('ddo')'
+  replace = 1
+  idxact = 'R'
+  return
